@@ -7,60 +7,58 @@ export default {
     const DOWNLOAD_FLAG = "dl"; 
     const ADMIN_PASSWORD = env.ADMIN_PASSWORD || "Soekyawwin@93";
 
-    // 1. PROXY LOGIC (Handles Stream OR Download)
+    // 1. PROXY LOGIC (Stream/Download with Full Range Support)
     const targetUrl = url.searchParams.get(PARAM_KEY);
     const shouldDownload = url.searchParams.get(DOWNLOAD_FLAG) === "true"; 
     
     if (targetUrl) {
-      // Caching Logic for Speed
-      const cache = caches.default;
-      let response = await cache.match(request);
-
-      if (!response) {
-          // Cache Miss: Fetch from origin
-          const newHeaders = new Headers(request.headers);
-          
-          // FIX: Use Real Android Browser User-Agent to allow APK playback
-          newHeaders.set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
-
-          try {
-            const originResponse = await fetch(targetUrl, {
-              method: request.method,
-              headers: newHeaders,
-              redirect: "follow"
-            });
-            
-            // Reconstruct response to make it cachable
-            response = new Response(originResponse.body, originResponse);
-            response.headers.set("Cache-Control", "public, max-age=14400");
-
-            // Store in cache
-            ctx.waitUntil(cache.put(request, response.clone())); 
-
-          } catch (err) {
-            return new Response("Error fetching content", { status: 500 });
-          }
-      }
+      // Prepare Headers to forward to R2
+      const newHeaders = new Headers(request.headers);
       
-      // Create final response with CORS and Headers
-      const responseHeaders = new Headers(response.headers);
-      responseHeaders.set("Access-Control-Allow-Origin", "*");
-      responseHeaders.set("Cache-Control", "public, max-age=14400"); 
+      // Use Android User-Agent (Fix for APKs)
+      newHeaders.set("User-Agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36");
 
-      // Handle Content-Disposition
-      if (shouldDownload) {
-          // Force Download
-          const filename = targetUrl.substring(targetUrl.lastIndexOf('/') + 1);
-          responseHeaders.set("Content-Disposition", `attachment; filename="${filename}"`);
-      } else {
-          // Force Stream/View (Important for Player)
-          responseHeaders.set("Content-Disposition", "inline");
+      // CRITICAL: Ensure Range header is passed (Fix for IDM & Players)
+      if (request.headers.has("Range")) {
+        newHeaders.set("Range", request.headers.get("Range"));
       }
 
-      return new Response(response.body, {
-        status: response.status,
-        headers: responseHeaders
-      });
+      try {
+        const response = await fetch(targetUrl, {
+          method: request.method,
+          headers: newHeaders,
+          redirect: "follow"
+        });
+
+        // Prepare Response Headers
+        const responseHeaders = new Headers(response.headers);
+        
+        // Essential Headers for Video Players
+        responseHeaders.set("Access-Control-Allow-Origin", "*");
+        responseHeaders.set("Accept-Ranges", "bytes"); // Tells player "Yes, we support seeking"
+        
+        // Remove existing Content-Disposition to avoid conflicts before setting ours
+        responseHeaders.delete("Content-Disposition");
+
+        // Set Content-Disposition based on mode
+        if (shouldDownload) {
+            const filename = targetUrl.substring(targetUrl.lastIndexOf('/') + 1);
+            responseHeaders.set("Content-Disposition", `attachment; filename="${filename}"`);
+        } else {
+            responseHeaders.set("Content-Disposition", "inline");
+        }
+
+        // Return the response with the CORRECT status code (200 or 206)
+        // This is vital for players to know if they got the full file or a chunk
+        return new Response(response.body, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: responseHeaders
+        });
+
+      } catch (err) {
+        return new Response("Error fetching content", { status: 500 });
+      }
     }
 
     // 2. AUTH CHECK
@@ -78,7 +76,7 @@ export default {
       <html lang="en">
       <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>APK Proxy Gen</title>
+        <title>Universal Proxy Gen</title>
         <style>
           body { font-family: sans-serif; padding: 20px; background: #f4f4f9; }
           input { width: 100%; padding: 12px; margin: 10px 0; border: 1px solid #ddd; border-radius: 5px; box-sizing: border-box; }
@@ -88,13 +86,13 @@ export default {
         </style>
       </head>
       <body>
-          <h3>Stream & Download Link Gen</h3>
+          <h3>Universal Stream & Download Gen</h3>
           <label>Original URL (R2 Link)</label>
           <input type="url" id="r2" placeholder="https://pub-xxx.r2.dev/video.mp4">
           <button onclick="gen()">Generate Links</button>
           
           <div style="margin-top: 20px; border-top: 1px solid #ccc; padding-top: 10px;">
-            <label>1. STREAM LINK (Use this in APK)</label>
+            <label>1. STREAM LINK (APK / Player Compatible)</label>
             <input type="text" id="streamOut" readonly onclick="this.select()">
             <button class="copy-btn" onclick="copyLink('streamOut')">Copy Stream Link</button>
             
