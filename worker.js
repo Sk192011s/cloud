@@ -1,9 +1,10 @@
 export default {
-  async fetch(request, env, ctx) {
+  // Add 'ctx' parameter to the fetch function to access Caching API
+  async fetch(request, env, ctx) { 
     const url = new URL(request.url);
     
     // CONFIGURATION
-    const PARAM_KEY = "download"; // The new query parameter: ?download=...
+    const PARAM_KEY = "download"; 
     const DOWNLOAD_FLAG = "dl"; 
     const ADMIN_PASSWORD = env.ADMIN_PASSWORD || "Soekyawwin@93";
 
@@ -12,40 +13,57 @@ export default {
     const shouldDownload = url.searchParams.get(DOWNLOAD_FLAG) === "true"; 
     
     if (targetUrl) {
-      const newHeaders = new Headers(request.headers);
-      newHeaders.set("User-Agent", "CF-Worker-Dual-Proxy");
+      const cache = caches.default;
+      let response = await cache.match(request); // Check if file is already in Cloudflare Cache
 
-      try {
-        const response = await fetch(targetUrl, {
-          method: request.method,
-          headers: newHeaders,
-          redirect: "follow"
-        });
+      if (!response) {
+          // Cache Miss: Must fetch from origin (R2/External Server)
+          const newHeaders = new Headers(request.headers);
+          newHeaders.set("User-Agent", "CF-Worker-Dual-Proxy");
 
-        const responseHeaders = new Headers(response.headers);
-        responseHeaders.set("Access-Control-Allow-Origin", "*");
-        responseHeaders.set("Cache-Control", "public, max-age=14400"); 
+          try {
+            const originResponse = await fetch(targetUrl, {
+              method: request.method,
+              headers: newHeaders,
+              redirect: "follow"
+            });
+            
+            // Clone the response to modify headers and store in cache
+            response = originResponse; 
 
-        // CRUCIAL STEP: Override Content-Disposition
-        if (shouldDownload) {
-            // Force Download behavior
-            const filename = targetUrl.substring(targetUrl.lastIndexOf('/') + 1);
-            responseHeaders.set("Content-Disposition", `attachment; filename="${filename}"`);
-        } else {
-            // Force Stream/View behavior (inline)
-            responseHeaders.set("Content-Disposition", "inline");
-        }
+            // Put a copy of the response into the Cloudflare Cache (Async)
+            // It will be cached according to Cache-Control header
+            ctx.waitUntil(cache.put(request, response.clone())); 
 
-        return new Response(response.body, {
-          status: response.status,
-          headers: responseHeaders
-        });
-      } catch (err) {
-        return new Response("Error fetching content", { status: 500 });
+          } catch (err) {
+            return new Response("Error fetching content", { status: 500 });
+          }
       }
+      
+      // Override headers regardless of whether it came from cache or origin
+      const responseHeaders = new Headers(response.headers);
+      responseHeaders.set("Access-Control-Allow-Origin", "*");
+      
+      // Ensure the client browser knows it's cachable (4 hours)
+      responseHeaders.set("Cache-Control", "public, max-age=14400"); 
+
+      // CRUCIAL STEP: Override Content-Disposition (Stream vs. Download)
+      if (shouldDownload) {
+          // Force Download
+          const filename = targetUrl.substring(targetUrl.lastIndexOf('/') + 1);
+          responseHeaders.set("Content-Disposition", `attachment; filename="${filename}"`);
+      } else {
+          // Force Stream/View
+          responseHeaders.set("Content-Disposition", "inline");
+      }
+
+      return new Response(response.body, {
+        status: response.status,
+        headers: responseHeaders
+      });
     }
 
-    // 2. AUTH CHECK
+    // 2. AUTH CHECK (Remains the same)
     const authHeader = request.headers.get("Authorization");
     if (!authHeader || authHeader.split(" ")[1] !== btoa("admin:" + ADMIN_PASSWORD)) {
       return new Response("Unauthorized", {
@@ -54,7 +72,7 @@ export default {
       });
     }
 
-    // 3. GENERATOR UI (DUAL LINK)
+    // 3. GENERATOR UI (Remains the same)
     const html = `
       <!DOCTYPE html>
       <html lang="en">
@@ -94,9 +112,7 @@ export default {
             if(!r2) return;
             
             const origin = window.location.origin;
-            // Link 1: Stream Link (Default)
             const streamLink = \`\${origin}/?\${paramKey}=\${r2}\`;
-            // Link 2: Download Link (with &dl=true flag)
             const dlLink = streamLink + \`&\${dlFlag}=true\`;
             
             document.getElementById('streamOut').value = streamLink;
