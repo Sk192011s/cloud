@@ -1,5 +1,5 @@
 export default {
-  // Add 'ctx' parameter to the fetch function to access Caching API
+  // Add 'ctx' parameter to the fetch function to access Caching API 
   async fetch(request, env, ctx) { 
     const url = new URL(request.url);
     
