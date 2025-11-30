@@ -1,42 +1,61 @@
-// Cloudflare Worker Code (Proxy Mode)
-export default {
-  async fetch(req) {
-    const cors = {
-      "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type",
-    };
+import { AwsClient } from 'https://cdn.jsdelivr.net/npm/aws4fetch@1.0.17/+esm';
 
-    if (req.method === "OPTIONS") return new Response(null, { headers: cors });
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const sourceUrl = url.searchParams.get("url");
+    const filename = url.searchParams.get("name");
+    
+    // 🔥 Link မှာ ဘယ် Account ကို သုံးမလဲဆိုတာ ခွဲပေးလိုက်မယ်
+    // ဥပမာ: ?target=A သို့မဟုတ် ?target=B
+    const target = url.searchParams.get("target") || "A";
+
+    if (!sourceUrl || !filename) {
+      return new Response("Usage: ?url=...&name=...&target=A", { status: 400 });
+    }
+
+    let r2AccessKey, r2SecretKey, r2AccountId, r2BucketName;
+    
+    // 🔥 Target အလိုက် သုံးမယ့် Account ကို ရွေးမယ်
+    if (target.toUpperCase() === "B") {
+      r2AccessKey = env.R2_ACCESS_KEY_ID_B;
+      r2SecretKey = env.R2_SECRET_ACCESS_KEY_B;
+      r2AccountId = env.R2_ACCOUNT_ID_B;
+      r2BucketName = env.R2_BUCKET_NAME_B;
+    } else {
+      // Default က Account A
+      r2AccessKey = env.R2_ACCESS_KEY_ID_A;
+      r2SecretKey = env.R2_SECRET_ACCESS_KEY_A;
+      r2AccountId = env.R2_ACCOUNT_ID_A;
+      r2BucketName = env.R2_BUCKET_NAME_A;
+    }
+
+    // ၁။ R2 Client တည်ဆောက်
+    const r2 = new AwsClient({
+      accessKeyId: r2AccessKey,
+      secretAccessKey: r2SecretKey,
+      service: 's3',
+      region: 'auto',
+    });
 
     try {
-      // Deno ဆီက Data လက်ခံမယ်
-      const { targetUrl, cookie, formData: data } = await req.json();
+      // ၂။ Source Video ချိတ်
+      const sourceRes = await fetch(sourceUrl);
+      if (!sourceRes.ok) throw new Error("Source URL Error");
 
-      // Form Data ပြန်ဖွဲ့စည်းမယ်
-      const form = new FormData();
-      for (const key in data) {
-        form.append(key, data[key]);
-      }
+      // ၃။ Target Account R2 ဆီ S3 Request ပို့
+      const r2Url = `https://${r2AccountId}.r2.cloudflarestorage.com/${r2BucketName}/${filename}`;
 
-      // Qyun ဆီကို Worker IP (Clean IP) နဲ့ လှမ်းပို့မယ်
-      const qyunRes = await fetch(targetUrl, {
-        method: "POST",
-        headers: {
-          "Cookie": cookie,
-          "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Mobile Safari/537.36",
-          "Referer": "https://qyun.org/files.html",
-          "Origin": "https://qyun.org",
-          "X-Requested-With": "XMLHttpRequest"
-        },
-        body: form
+      const upload = await r2.fetch(r2Url, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'video/mp4' },
+        body: sourceRes.body
       });
-
-      const text = await qyunRes.text();
-      return new Response(text, { headers: { ...cors, "Content-Type": "application/json" } });
-
+      
+      return new Response(upload.ok ? "Success" : await upload.text(), { status: upload.status });
+      
     } catch (e) {
-      return new Response(JSON.stringify({ error: e.message }), { headers: cors });
+      return new Response(e.message, { status: 500 });
     }
-  }
+  },
 };
