@@ -1,4 +1,4 @@
-name = "r2-cross-account-uploader"
+name = "tester"
 main = "worker.js"
 compatibility_date = "2023-10-01"
 
