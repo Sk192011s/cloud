@@ -1,36 +1,44 @@
-// Cloudflare Worker Code (Login Proxy)
+// Cloudflare Worker (Auto Login & Policy Fetcher)
 export default {
   async fetch(req) {
     const cors = {
       "Access-Control-Allow-Origin": "*",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "POST",
       "Access-Control-Allow-Headers": "Content-Type",
     };
 
-    // Preflight check
-    if (req.method === "OPTIONS") {
-      return new Response(null, { headers: cors });
-    }
+    if (req.method === "OPTIONS") return new Response(null, { headers: cors });
 
     try {
-      if (req.method !== "POST") {
-        return new Response("Method not allowed", { status: 405, headers: cors });
-      }
+      const { email, password, filename, size } = await req.json();
 
-      // Deno ဆီက Data လက်ခံမယ်
-      const { targetUrl, cookie, formData: data } = await req.json();
+      // 1. Login to Qyun
+      const loginRes = await fetch("https://qyun.org/api/v1/user/session", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userName: email, Password: password })
+      });
 
-      if (!targetUrl || !cookie) {
-        return new Response(JSON.stringify({ error: "Missing params" }), { headers: cors });
-      }
+      const loginData = await loginRes.json();
+      if (loginData.code !== 0) throw new Error("Login Failed: " + loginData.msg);
 
+      // Get Cookie from Login Response
+      let cookie = loginRes.headers.get("set-cookie");
+      if (!cookie) throw new Error("No cookie received");
+
+      // 2. Request Upload Policy (Channel 2 = bucketId: 1)
+      // We use the 'files.html' endpoint logic to be safe
       const form = new FormData();
-      for (const key in data) {
-        form.append(key, data[key]);
-      }
+      form.append("name", filename);
+      form.append("size", size);
+      form.append("type", "video/mp4");
+      form.append("bucketId", "1"); // Channel 2
+      
+      const date = new Date().toISOString().slice(0,10).replace(/-/g,'/'); 
+      const key = `upload/${date}/${crypto.randomUUID()}_${filename}`;
+      form.append("key", key);
 
-      // Qyun ဆီကို Cloudflare IP သုံးပြီး လှမ်းပို့မယ်
-      const qyunRes = await fetch(targetUrl, {
+      const policyRes = await fetch("https://qyun.org/files.html?folderId=", {
         method: "POST",
         headers: {
           "Cookie": cookie,
@@ -42,15 +50,9 @@ export default {
         body: form
       });
 
-      const text = await qyunRes.text();
-      
-      // Qyun အဖြေကို Deno ဆီ ပြန်ပို့မယ်
-      return new Response(text, {
-        headers: {
-          ...cors,
-          "Content-Type": "application/json"
-        }
-      });
+      const policyText = await policyRes.text();
+      // Return the Policy JSON back to Deno
+      return new Response(policyText, { headers: { ...cors, "Content-Type": "application/json" } });
 
     } catch (e) {
       return new Response(JSON.stringify({ error: e.message }), { headers: cors });
